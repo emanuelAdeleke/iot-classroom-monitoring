@@ -1,0 +1,24 @@
+let sensor = msg.payload;
+let topicParts = msg.topic.split("/"); // ["WWH","017","env","device-03"]
+
+msg.payload = [
+  {
+    measurement: "environment_data",
+    tags: {
+      building: topicParts[0],
+      room: topicParts[1],
+      sensor_type: topicParts[2],
+      device: topicParts[3]
+    },
+    fields: {
+      temperature: Number(sensor.temp_c),
+      humidity: Number(sensor.rh),
+      co2: Number(sensor.eco2_ppm),
+      tvoc: Number(sensor.tvoc_ppb),
+      aqi: Number(sensor.aqi),
+      light: Number(sensor.light)
+    }
+  }
+];
+
+return msg;
