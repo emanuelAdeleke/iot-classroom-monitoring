@@ -1,0 +1,51 @@
+// ----- TRANSFORM + ROUTE TO TANDEM (MULTI-DEVICE CLEAN) -----
+
+const input = msg.payload || {};
+const now = Date.now();
+
+// Helper: clean numbers
+function clean(v) {
+    const n = Number(v);
+    return isNaN(n) ? null : n;
+}
+
+// Extract classroom and device from topic
+// Example: "WWH/015/env/device-01"
+const topicParts = msg.topic.split('/');
+const classroomNumber = topicParts[1] || "unknown";
+const deviceNumber = topicParts[3] || "device-01";
+const deviceKey = `${classroomNumber}_${deviceNumber}`;
+
+// ----- MAP DEVICES TO TANDEM URL -----
+const urlMap = {
+    "016_device-02": "https://:AlhsenrbQPeibO_ET6v4vg@tandem.autodesk.com/api/v1/timeseries/models/urn:adsk.dtm:4GXQhQ9QQRCuo6s-P9h7GA/streams/AQAAANi0FzEcnkN2qOtfkUff83wAAAAA",
+
+    "017_device-03": "https://:sktDVudWTFWtL9Eto1TFew@tandem.autodesk.com/api/v1/timeseries/models/urn:adsk.dtm:4GXQhQ9QQRCuo6s-P9h7GA/streams/AQAAACz4AInKaUkmkXrVDmzrLA8AAAAA",
+
+    "015_device-01": "https://:HJ8EepZ2QVebshhDsCd5BQ@tandem.autodesk.com/api/v1/timeseries/models/urn:adsk.dtm:4GXQhQ9QQRCuo6s-P9h7GA/streams/AQAAABNuoxJTNUrNqdeDOu54xAYAAAAA"
+};
+
+// Assign URL
+msg.url = urlMap[deviceKey];
+
+// Stop if not mapped
+if (!msg.url) {
+    node.warn("No URL mapped for device: " + deviceKey);
+    return null;
+}
+
+// Build payload for Tandem
+msg.payload = {
+    device: `classroom${classroomNumber}_${deviceNumber}`,
+    telemetry: {
+        temp_c: clean(input.temp_c),
+        rh: clean(input.rh),
+        eco2_ppm: clean(input.eco2_ppm),
+        tvoc_ppb: clean(input.tvoc_ppb),
+        aqi: clean(input.aqi),
+        light: clean(input.light)
+    },
+    timestamp: now
+};
+
+return msg;
