@@ -1,0 +1,138 @@
+#include <Wire.h>
+#include <Adafruit_VL53L1X.h>
+#include <WiFi.h>
+#include <PubSubClient.h>
+#include <Adafruit_SSD1306.h>
+#include <ArduinoJson.h>
+
+// ---------------- OLED CONFIG ----------------
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET    -1
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+// ---------------- SENSOR ----------------
+Adafruit_VL53L1X sensor = Adafruit_VL53L1X();
+
+// ---------------- ROOM & SENSOR INFO ----------------
+const char* ROOM_ID   = "ROOM15";
+const char* SENSOR_ID = "B"; // Change to "B" for ESP32 B
+
+// ---------------- WIFI & MQTT ----------------
+const char* ssid     = "Emmy";
+const char* password = "Emmanuel412";
+const char* mqtt_server = "broker.hivemq.com";
+const int mqtt_port = 1883;
+
+WiFiClient espClient;
+PubSubClient client(espClient);
+
+String trigger_topic;
+String occupancy_topic;
+
+// ---------------- SENSOR SETTINGS ----------------
+const int DIST_THRESHOLD = 2000; // mm
+unsigned long lastTriggerTime = 0;
+
+// ---------------- OCCUPANCY INFO ----------------
+int entryCount = 0;
+int exitCount  = 0;
+int occupancy  = 0;
+
+void setup() {
+  Serial.begin(115200);
+  Wire.begin();
+
+  // ---------------- OLED ----------------
+  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    Serial.println("SSD1306 allocation failed");
+    while(1);
+  }
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+
+  // ---------------- SENSOR ----------------
+  if (!sensor.begin()) {
+    Serial.println("Sensor not found!");
+    display.println("Sensor not found!");
+    display.display();
+    while(1);
+  }
+  sensor.startRanging();
+
+  // ---------------- WIFI ----------------
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500); Serial.print(".");
+  }
+  Serial.println("\nWiFi Connected");
+
+  // ---------------- MQTT ----------------
+  client.setServer(mqtt_server, mqtt_port);
+  client.setCallback(mqttCallback);
+
+  // Build MQTT topics dynamically
+  trigger_topic   = "WWH/OCP/" + String(ROOM_ID) + "/" + String(SENSOR_ID) + "/trigger";
+  occupancy_topic = "WWH/OCP/" + String(ROOM_ID) + "/occupancy";
+}
+
+void loop() {
+  if (!client.connected()) reconnectMQTT();
+  client.loop();
+
+  // ---------------- READ SENSOR ----------------
+  int distance = sensor.distance();
+  bool triggered = (distance > 0 && distance < DIST_THRESHOLD);
+
+  // Publish trigger if threshold crossed
+  if (triggered) {
+    String message = "{\"trigger\":true,\"timestamp\":" + String(millis()) + "}";
+    client.publish(trigger_topic.c_str(), message.c_str());
+    Serial.println("Trigger sent!");
+    lastTriggerTime = millis();
+    delay(500); // debounce
+  }
+
+  // ---------------- UPDATE OLED ----------------
+  display.clearDisplay();
+  display.setCursor(0,0);
+  display.println(String(ROOM_ID) + "_" + SENSOR_ID + "_OCP_IoT");
+  display.println();
+  display.print("Distance: "); display.print(distance); display.println(" mm");
+  display.print("Trigger: "); display.println(triggered ? "YES" : "NO");
+  display.print("Last Trigger: "); display.print(lastTriggerTime / 1000); display.println(" s");
+  display.setCursor(0,40);
+  display.print("Occupancy: "); display.println(occupancy);
+  display.print("Entry: "); display.println(entryCount);
+  display.print("Exit: "); display.println(exitCount);
+  display.display();
+
+  delay(50);
+}
+
+// ---------------- MQTT CALLBACK ----------------
+void mqttCallback(char* topic, byte* payload, unsigned int length) {
+  if (String(topic) == occupancy_topic) {
+    StaticJsonDocument<200> doc;
+    DeserializationError error = deserializeJson(doc, payload, length);
+    if (!error) {
+      entryCount = doc["entry"] | entryCount;
+      exitCount  = doc["exit"]  | exitCount;
+      occupancy  = doc["occupancy"] | occupancy;
+    }
+  }
+}
+
+// ---------------- MQTT RECONNECT ----------------
+void reconnectMQTT() {
+  while (!client.connected()) {
+    Serial.print("Connecting MQTT...");
+    if (client.connect(("ESP32_" + String(SENSOR_ID)).c_str())) {
+      Serial.println("connected");
+    } else {
+      Serial.println("failed...");
+      delay(2000);
+    }
+  }
+}
