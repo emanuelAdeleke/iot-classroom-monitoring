@@ -1,0 +1,111 @@
+// ---------------- CONFIG ----------------
+const TIMEOUT   = 2000;
+const LOCK_TIME = 150;
+
+// ---------------- TANDEM CONFIG ----------------
+const TANDEM_URL = "https://:HJ8EepZ2QVebshhDsCd5BQ@tandem.autodesk.com/api/v1/timeseries/models/urn:adsk.dtm:4GXQhQ9QQRCuo6s-P9h7GA/streams/AQAAABNuoxJTNUrNqdeDOu54xAYAAAAA";
+
+// ---------------- GET TOPIC ----------------
+let parts = msg.topic.split("/");
+let room = parts[2];
+let sensor = parts[3];
+
+// ---------------- LOAD ROOMS ----------------
+let rooms = flow.get("rooms") || {};
+
+if (!rooms[room]) {
+    rooms[room] = {
+        state: "IDLE",
+        lastTime: 0,
+        lockUntil: 0,
+        occupancy: 0,
+        dailyEntry: 0,
+        dailyExit: 0,
+        lastResetDay: (new Date()).getDate()
+    };
+}
+
+let data = rooms[room];
+let now = Date.now();
+let today = (new Date()).getDate();
+
+// ---------------- DAILY RESET ----------------
+if (data.lastResetDay !== today) {
+    data.dailyEntry = 0;
+    data.dailyExit = 0;
+    data.lastResetDay = today;
+}
+
+// ---------------- GLOBAL LOCK ----------------
+if (now < data.lockUntil) return null;
+
+// ---------------- TIMEOUT RESET ----------------
+if (now - data.lastTime > TIMEOUT) {
+    data.state = "IDLE";
+}
+
+// ---------------- STATE MACHINE ----------------
+let event = "NONE";
+
+// IDLE
+if (data.state === "IDLE") {
+    if (sensor === "A") {
+        data.state = "A";
+        data.lastTime = now;
+    } else if (sensor === "B") {
+        data.state = "B";
+        data.lastTime = now;
+    }
+}
+
+// ENTRY
+else if (data.state === "A" && sensor === "B") {
+    data.occupancy++;
+    data.dailyEntry++;
+    event = "ENTRY";
+
+    data.lockUntil = now + LOCK_TIME;
+    data.state = "IDLE";
+}
+
+// EXIT
+else if (data.state === "B" && sensor === "A") {
+    if (data.occupancy > 0) {
+        data.occupancy--;
+        data.dailyExit++;
+        event = "EXIT";
+
+        data.lockUntil = now + LOCK_TIME;
+    }
+    data.state = "IDLE";
+}
+
+// ---------------- AVERAGE ----------------
+let totalMoves = data.dailyEntry + data.dailyExit;
+let avgOccupancy = totalMoves ? (data.dailyEntry - data.dailyExit) / totalMoves : 0;
+
+// ---------------- SAVE ----------------
+data.lastTime = now;
+rooms[room] = data;
+flow.set("rooms", rooms);
+
+// ---------------- PREPARE TANDEM REQUEST ----------------
+msg.method = "POST";
+msg.url = TANDEM_URL;
+
+msg.headers = {
+    "Content-Type": "application/json"
+};
+
+msg.payload = {
+    timestamp: new Date().toISOString(),
+    data: {
+        room: room,
+        occupancy: data.occupancy,
+        dailyEntry: data.dailyEntry,
+        dailyExit: data.dailyExit,
+        averageOccupancy: Number(avgOccupancy.toFixed(2))
+    }
+};
+
+return msg;
