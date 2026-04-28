@@ -42,7 +42,7 @@ const urlMap = {
     
      "018_device-04": "https://:r2n3GOKRQJeT1jcdOhliXw@tandem.autodesk.com/api/v1/timeseries/models/urn:adsk.dtm:4GXQhQ9QQRCuo6s-P9h7GA/streams/AQAAALsc8bw2gEs0rMsOd0qf9qoAAAAA",
 
-     "110_device-06": "https://:fjh11wGlSfegDP_GJEi3GQ@tandem.autodesk.com/api/v1/timeseries/models/urn:adsk.dtm:4GXQhQ9QQRCuo6s-P9h7GA/streams/AQAAAByeE6aLVELAu12lnYbj1eMAAAAA",
+     "110_device-06": "https://:2Sso4RPISK2YMxcCU7nttA@tandem.autodesk.com/api/v1/timeseries/models/urn:adsk.dtm:4GXQhQ9QQRCuo6s-P9h7GA/streams/AQAAAPnzqQwK6k1mo100Vef9j5wAAAAA",
 };
 
 const deviceKey = `${classroomNumber}_${deviceNumber}`;
@@ -177,7 +177,7 @@ if (status !== "NORMAL") {
 
     if (elapsedSinceStart >= 1 * 60 * 1000) {
 
-        if (elapsedSinceEmail >= 5 * 60 * 1000) {
+        if (elapsedSinceEmail >= 30 * 60 * 1000) {
             sendEmail = true;
             context.set("lastEmailSent", now);
         }
