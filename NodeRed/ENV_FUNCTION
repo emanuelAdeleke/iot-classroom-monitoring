@@ -1,51 +1,248 @@
-// ----- TRANSFORM + ROUTE TO TANDEM (MULTI-DEVICE CLEAN) -----
+ // ----- DIGITAL TWIN KPI + ALERT + TANDEM + EMAIL SYSTEM -----
 
-const input = msg.payload || {};
+let input = msg.payload || {};
 const now = Date.now();
 
-// Helper: clean numbers
 function clean(v) {
     const n = Number(v);
     return isNaN(n) ? null : n;
 }
 
-// Extract classroom and device from topic
-// Example: "WWH/015/env/device-01"
-const topicParts = msg.topic.split('/');
+// ======================================================
+// TOPIC PARSE
+// ======================================================
+const topicParts = (msg.topic || "").split('/');
 const classroomNumber = topicParts[1] || "unknown";
 const deviceNumber = topicParts[3] || "device-01";
-const deviceKey = `${classroomNumber}_${deviceNumber}`;
 
-// ----- MAP DEVICES TO TANDEM URL -----
+// ======================================================
+// RATE LIMIT (10s)
+// ======================================================
+let lastSent = context.get("lastSent") || 0;
+if (now - lastSent < 10000) return null;
+context.set("lastSent", now);
+
+// ======================================================
+// ALERT STATE
+// ======================================================
+let alertStart = context.get("alertStart") || null;
+let lastEmailSent = context.get("lastEmailSent") || 0;
+
+// ======================================================
+// TANDEM URL MAP
+// ======================================================
 const urlMap = {
     "016_device-02": "https://:AlhsenrbQPeibO_ET6v4vg@tandem.autodesk.com/api/v1/timeseries/models/urn:adsk.dtm:4GXQhQ9QQRCuo6s-P9h7GA/streams/AQAAANi0FzEcnkN2qOtfkUff83wAAAAA",
 
     "017_device-03": "https://:sktDVudWTFWtL9Eto1TFew@tandem.autodesk.com/api/v1/timeseries/models/urn:adsk.dtm:4GXQhQ9QQRCuo6s-P9h7GA/streams/AQAAACz4AInKaUkmkXrVDmzrLA8AAAAA",
 
-    "015_device-01": "https://:HJ8EepZ2QVebshhDsCd5BQ@tandem.autodesk.com/api/v1/timeseries/models/urn:adsk.dtm:4GXQhQ9QQRCuo6s-P9h7GA/streams/AQAAABNuoxJTNUrNqdeDOu54xAYAAAAA"
+    "015_device-01": "https://:HJ8EepZ2QVebshhDsCd5BQ@tandem.autodesk.com/api/v1/timeseries/models/urn:adsk.dtm:4GXQhQ9QQRCuo6s-P9h7GA/streams/AQAAABNuoxJTNUrNqdeDOu54xAYAAAAA",
+
+    "005_device-05": "https://:N6gfZ9qyRfO5T7-RXip7mA@tandem.autodesk.com/api/v1/timeseries/models/urn:adsk.dtm:4GXQhQ9QQRCuo6s-P9h7GA/streams/AQAAACDiepPeo04Wu-7edp3B_XMAAAAA",
+    
+     "018_device-04": "https://:r2n3GOKRQJeT1jcdOhliXw@tandem.autodesk.com/api/v1/timeseries/models/urn:adsk.dtm:4GXQhQ9QQRCuo6s-P9h7GA/streams/AQAAALsc8bw2gEs0rMsOd0qf9qoAAAAA",
+
+     "110_device-06": "https://:fjh11wGlSfegDP_GJEi3GQ@tandem.autodesk.com/api/v1/timeseries/models/urn:adsk.dtm:4GXQhQ9QQRCuo6s-P9h7GA/streams/AQAAAByeE6aLVELAu12lnYbj1eMAAAAA",
 };
 
-// Assign URL
+const deviceKey = `${classroomNumber}_${deviceNumber}`;
 msg.url = urlMap[deviceKey];
+msg.method = "POST";
 
-// Stop if not mapped
-if (!msg.url) {
-    node.warn("No URL mapped for device: " + deviceKey);
-    return null;
+if (!msg.url) return null;
+
+// ======================================================
+// SAFE PARSE
+// ======================================================
+if (typeof input === "string") {
+    try { input = JSON.parse(input); }
+    catch { return null; }
 }
 
-// Build payload for Tandem
-msg.payload = {
-    device: `classroom${classroomNumber}_${deviceNumber}`,
-    telemetry: {
-        temp_c: clean(input.temp_c),
-        rh: clean(input.rh),
-        eco2_ppm: clean(input.eco2_ppm),
-        tvoc_ppb: clean(input.tvoc_ppb),
-        aqi: clean(input.aqi),
-        light: clean(input.light)
+// ======================================================
+// SENSOR VALUES
+// ======================================================
+let T = clean(input.temp_c);
+let RH = clean(input.humidity);
+let C = clean(input.eco2 ?? input.eco2_ppm);
+let AQI = clean(input.aqi);
+
+let TVOC = clean(
+    input.tvoc ??
+    input.tvoc_ppb ??
+    input.tvoc_ppm ??
+    input.voc ??
+    input.TVOC
+);
+
+let O = clean(input.occupancy) || 0;
+let T_f = (T !== null) ? (T * 9/5) + 32 : null;
+
+// ======================================================
+// SEASON LOGIC
+// ======================================================
+let month = new Date().getMonth() + 1;
+let season = "neutral";
+
+if ([12,1,2].includes(month)) season = "winter";
+else if ([3,4,5].includes(month)) season = "spring";
+else if ([6,7,8].includes(month)) season = "summer";
+else if ([9,10,11].includes(month)) season = "fall";
+
+let T_min, T_max;
+
+switch(season) {
+    case "winter": T_min = 68; T_max = 75; break;
+    case "summer": T_min = 73; T_max = 79; break;
+    default: T_min = 70; T_max = 76;
+}
+
+// ======================================================
+// KPI CALCULATIONS
+// ======================================================
+let TCI = null;
+
+if (T_f !== null) {
+    if (T_f < T_min) TCI = Math.max(0, 1 - (T_min - T_f) / 7);
+    else if (T_f > T_max) TCI = Math.max(0, 1 - (T_f - T_max) / 7);
+    else TCI = 1;
+}
+
+let RH_opt = (season === "winter") ? 40 : (season === "summer" ? 55 : 50);
+
+let HCI = RH !== null ? Math.max(0, 1 - Math.abs(RH - RH_opt) / 30) : null;
+let AQI_KPI = C !== null ? Math.max(0, Math.min(1, (1000 - C) / 500)) : null;
+let OSI = Math.max(0, 1 - (O / 20));
+
+let EPS = (TCI !== null && HCI !== null && AQI_KPI !== null)
+    ? (0.25 * TCI) + (0.20 * HCI) + (0.25 * AQI_KPI) + (0.30 * OSI)
+    : null;
+
+// ======================================================
+// ALERT STATUS
+// ======================================================
+let status = "NORMAL";
+
+if (EPS !== null) {
+    if (EPS < 0.2) status = "CRITICAL";
+    else if (EPS < 0.4) status = "WARNING";
+    else {
+        context.set("alertStart", null);
+        context.set("lastEmailSent", null);
+    }
+}
+
+// ======================================================
+// TANDEM MESSAGE
+// ======================================================
+let tandemMsg = {
+    payload: {
+        device: `classroom${classroomNumber}_${deviceNumber}`,
+        timestamp: now,
+        telemetry: {
+            temp_c: T,
+            temp_f: T_f,
+            rh: RH,
+            eco2_ppm: C,
+            aqi: AQI,
+            tvoc: TVOC !== null ? TVOC : 0,
+            occupancy: O,
+            season,
+            TCI,
+            HCI,
+            AQI_KPI,
+            OSI,
+            EPS,
+            alert_status: status
+        }
     },
-    timestamp: now
+    url: msg.url,
+    method: "POST"
 };
 
-return msg;
+// ======================================================
+// ALERT LOGIC (FIXED)
+// ======================================================
+let sendEmail = false;
+
+if (status !== "NORMAL") {
+
+    if (!alertStart) {
+        context.set("alertStart", now);
+        return [tandemMsg, null];
+    }
+
+    let elapsedSinceStart = now - alertStart;
+    let elapsedSinceEmail = now - lastEmailSent;
+
+    if (elapsedSinceStart >= 1 * 60 * 1000) {
+
+        if (elapsedSinceEmail >= 5 * 60 * 1000) {
+            sendEmail = true;
+            context.set("lastEmailSent", now);
+        }
+    }
+}
+
+// ======================================================
+// FACILITY EMAIL OUTPUT
+// ======================================================
+if (sendEmail) {
+
+    let emailMsg = `
+🚨 FACILITY MANAGEMENT ALERT – DIGITAL TWIN SYSTEM
+-----------------------------------
+
+LOCATION
+-----------------------------------
+Wilson Wallis Hall:
+Classroom: ${classroomNumber}
+Device: ${deviceNumber}
+Time: ${new Date(now).toLocaleString()}
+
+-----------------------------------
+STATUS
+-----------------------------------
+Level: ${status}
+EPS Score: ${EPS?.toFixed(2)}
+
+-----------------------------------
+CONDITION
+-----------------------------------
+${status === "CRITICAL"
+? "🔴 CRITICAL CONDITION: Immediate intervention required"
+: "🟠 WARNING CONDITION: System performance degrading"}
+
+-----------------------------------
+ENVIRONMENT
+-----------------------------------
+Temperature: ${T_f?.toFixed(1)} °F
+Humidity: ${RH}
+CO₂: ${C} ppm
+Occupancy: ${O}
+
+-----------------------------------
+RECOMMENDED ACTIONS
+-----------------------------------
+${status === "CRITICAL"
+? `1. Increase ventilation immediately
+2. Inspect HVAC system performance
+3. Reduce occupancy if necessary
+4. Check airflow distribution`
+: `1. Increase fresh air slightly
+2. Monitor CO₂ trends
+3. Adjust HVAC setpoints`}
+
+-----------------------------------
+SYSTEM NOTE
+-----------------------------------
+Auto-generated by Digital Twin KPI Monitoring System
+`;
+
+    return [tandemMsg, { payload: emailMsg }];
+}
+
+// ======================================================
+// DEFAULT OUTPUT
+// ======================================================
+return [tandemMsg, null];
